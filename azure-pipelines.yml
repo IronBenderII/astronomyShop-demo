@@ -1,0 +1,74 @@
+# trying this from scratch based on https://stackoverflow.com/questions/63900414/azure-devops-unable-to-create-pipeline-due-to-insufficient-ad-permission
+# used this to get the dockerRegistryServiceConnection: https://stackoverflow.com/questions/59439705/what-is-a-docker-registry-service-connection
+
+# removed these from the manifests of deploy
+                #$(Pipeline.Workspace)/manifests/deployment.yml
+                #$(Pipeline.Workspace)/manifests/service.yml
+
+trigger:
+- master
+
+resources:
+- repo: self
+
+variables:
+  dockerRegistryServiceConnection: '711d2464-542e-444d-bdc5-cf8614f08857'
+  azureRegistryServiceConnection: 'to azure portal'
+  kubernetesServiceConnection: "AstronomyShop-default"
+  containerRegistry: 'astronomyshopregistry.azurecr.io'
+  imagePullSecret: 'astroshopsecret'
+  vmImageName: 'ubuntu-latest'
+
+stages:
+- stage: Build
+  displayName: Build stage
+  jobs:  
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: DockerCompose@1
+      displayName: Build and push images using Docker Compose
+      inputs:
+        containerregistrytype: 'Azure Container Registry'
+        azureSubscription: $(azureRegistryServiceConnection)
+        azureContainerRegistry: $(containerRegistry)
+        dockerComposeFile: '**/docker-compose.yml'
+        action: 'Build services'
+        tags: |
+          $(Build.BuildId)
+
+- stage: Deploy
+  displayName: Deploy stage
+  dependsOn: Build
+
+  jobs:
+  - deployment: Deploy
+    environment: AstronomyShop
+    displayName: Deploy
+    pool:
+      vmImage: $(vmImageName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: KubernetesManifest@1
+            displayName: Create imagePullSecret
+            inputs:
+              action: createSecret
+              secretName: $(imagePullSecret)
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+              
+          - task: KubernetesManifest@1
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              action: deploy
+              kubernetesServiceConnection: $(kubernetesServiceConnection)
+              manifests: |
+                ../../kubernetes/opentelemetry-demo.yaml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(Build.BuildId)
